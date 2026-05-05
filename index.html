@@ -12784,6 +12784,9 @@ rt{font-size:.52em;font-weight:400;color:var(--or-d)}
           <button class="api-save-btn" onclick="saveClaudeKey()">保存</button>
         </div>
         <div class="api-status" id="claude-status">画像から問題を自動生成する際に使います。モデル: <code>claude-opus-4-7</code></div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <button class="api-save-btn" style="flex:1;background:#3d8a8a" onclick="testClaudeKey()">🧪 テスト</button>
+        </div>
       </div>
       <div class="setting-group">
         <div class="setting-label">📺 YouTube Data API キー（動画検索用・任意）<a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank">（有効化）</a></div>
@@ -13595,7 +13598,58 @@ function saveClaudeKey(){
     const v=document.getElementById('claude-key-input').value.trim();
     if(!v){showToast('APIキーを入力してください');return;}
     claudeKey=v;localStorage.setItem('claude_api_key',v);
-    setStatus('claude-status','✅ 保存しました！','ok');
+    if(!v.startsWith('sk-ant-')){
+        setStatus('claude-status','⚠️ 保存しましたが、AnthropicのAPIキーは通常「sk-ant-...」で始まります。「🧪 テスト」で確認してください。','err');
+    } else {
+        setStatus('claude-status','✅ 保存しました！「🧪 テスト」でちゃんと動くか確認できます。','ok');
+    }
+}
+async function testClaudeKey(){
+    const v=document.getElementById('claude-key-input').value.trim();
+    if(v){claudeKey=v;localStorage.setItem('claude_api_key',v);}
+    if(!claudeKey){setStatus('claude-status','❌ まずAPIキーを入力してね','err');return;}
+    if(!claudeKey.startsWith('sk-ant-')){
+        setStatus('claude-status','⚠️ AnthropicのAPIキーは「sk-ant-」で始まります。<a href="https://console.anthropic.com/account/keys" target="_blank">Console</a>で作り直してください。','err');
+        return;
+    }
+    setStatus('claude-status','🧪 テスト中…','');
+    try{
+        const res = await fetch('https://api.anthropic.com/v1/messages',{
+            method:'POST',
+            headers:{
+                'Content-Type':'application/json',
+                'x-api-key': claudeKey,
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true'
+            },
+            body: JSON.stringify({
+                model:'claude-haiku-4-5',
+                max_tokens:50,
+                messages:[{role:'user',content:'こんにちはとだけ言って'}]
+            })
+        });
+        if(!res.ok){
+            const e = await res.json().catch(()=>({}));
+            console.warn('[Claude test]', res.status, e);
+            const msg = e?.error?.message || ('HTTP '+res.status);
+            let hint = '';
+            if(res.status === 401){
+                hint = '<br>→ キーが無効・取り消されています。<a href="https://console.anthropic.com/account/keys" target="_blank">Console</a>で新しく作り直してください。';
+            } else if(res.status === 403){
+                hint = '<br>→ このキーにAPIへのアクセス権がありません。<a href="https://console.anthropic.com/settings/billing" target="_blank">課金設定</a>を確認してください（$5以上のクレジットが必要です）。';
+            } else if(res.status === 429){
+                hint = '<br>→ レート上限に達しています。少し待ってから再試行してください。';
+            } else if(res.status === 400 && /credit|balance/i.test(msg)){
+                hint = '<br>→ アカウントのクレジット残高が不足です。';
+            }
+            setStatus('claude-status',`❌ [${res.status}] ${msg}${hint}`,'err');
+            return;
+        }
+        setStatus('claude-status','✅ せいじょうに動いています！画像読み取りも使えます。','ok');
+    }catch(e){
+        console.error('[Claude test]', e);
+        setStatus('claude-status','❌ ネットワークエラー: '+e.message,'err');
+    }
 }
 function saveYoutubeKey(){
     const v=document.getElementById('youtube-key-input').value.trim();
@@ -13979,7 +14033,14 @@ async function generateFromImage(){
                 ]}]
             })
         });
-        if(!res.ok){const e=await res.json().catch(()=>({}));console.warn('[Claude API]',res.status,e);throw new Error(e?.error?.message||'HTTP '+res.status);}
+        if(!res.ok){
+            const e = await res.json().catch(()=>({}));
+            console.warn('[Claude API]',res.status,e);
+            const msg = e?.error?.message||'HTTP '+res.status;
+            const err = new Error(msg);
+            err.status = res.status;
+            throw err;
+        }
         const data=await res.json();
         const raw=data.content?.find(c=>c.type==='text')?.text||'';
         // JSONを抽出
@@ -14005,7 +14066,15 @@ async function generateFromImage(){
         setTimeout(()=>{closeModal('modal-upload');renderTOC();goLearning(topic.id);},800);
     }catch(e){
         statusEl.className='gen-status err';
-        statusEl.textContent='❌ エラー: '+e.message;
+        let hint = '';
+        if(e.status === 401){
+            hint = '<br>→ Claude APIキーが無効です。「⚙️ 設定」を開いて「🧪 テスト」してください。';
+        } else if(e.status === 403){
+            hint = '<br>→ APIアクセス権限がないか、クレジット残高が不足しています。';
+        } else if(e.status === 429){
+            hint = '<br>→ レート上限に達しています。少し時間をおいて再試行してください。';
+        }
+        statusEl.innerHTML = '❌ エラー: '+e.message+hint;
         document.getElementById('btn-generate').disabled=false;
     }
 }
