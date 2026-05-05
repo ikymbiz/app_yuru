@@ -3722,18 +3722,21 @@ async function testClaudeKey(){
         setStatus('claude-status','⚠️ AnthropicのAPIキーは「sk-ant-」で始まります。<a href="https://console.anthropic.com/account/keys" target="_blank">Console</a>で作り直してください。','err');
         return;
     }
+    const cleanKey = claudeKey.trim();
+    const keyInfo = `長さ${cleanKey.length}文字、先頭${cleanKey.substring(0,12)}…末尾…${cleanKey.slice(-4)}`;
+    console.log('[Claude test] using key:', keyInfo);
     setStatus('claude-status','🧪 テスト中…','');
     try{
         const res = await fetch('https://api.anthropic.com/v1/messages',{
             method:'POST',
             headers:{
                 'Content-Type':'application/json',
-                'x-api-key': claudeKey,
+                'x-api-key': cleanKey,
                 'anthropic-version': '2023-06-01',
                 'anthropic-dangerous-direct-browser-access': 'true'
             },
             body: JSON.stringify({
-                model:'claude-haiku-4-5',
+                model:'claude-opus-4-7',
                 max_tokens:50,
                 messages:[{role:'user',content:'こんにちはとだけ言って'}]
             })
@@ -3744,9 +3747,9 @@ async function testClaudeKey(){
             const msg = e?.error?.message || ('HTTP '+res.status);
             let hint = '';
             if(res.status === 401){
-                hint = '<br>→ キーが無効・取り消されています。<a href="https://console.anthropic.com/account/keys" target="_blank">Console</a>で新しく作り直してください。';
+                hint = `<br>送信したキー: ${keyInfo}<br>→ キーが無効・取り消されています。<a href="https://console.anthropic.com/account/keys" target="_blank">Console</a>で新しく作り直してください。`;
             } else if(res.status === 403){
-                hint = '<br>→ このキーにAPIへのアクセス権がありません。<a href="https://console.anthropic.com/settings/billing" target="_blank">課金設定</a>を確認してください（$5以上のクレジットが必要です）。';
+                hint = '<br>→ このキーにAPIへのアクセス権、または claude-opus-4-7 へのアクセス権がありません。<a href="https://console.anthropic.com/settings/billing" target="_blank">課金設定</a>を確認してください（$5以上のクレジットが必要です）。';
             } else if(res.status === 429){
                 hint = '<br>→ レート上限に達しています。少し待ってから再試行してください。';
             } else if(res.status === 400 && /credit|balance/i.test(msg)){
@@ -3825,24 +3828,24 @@ function applyPastedKeyData(){
     if(parsed && (parsed.gemini || parsed.claude || parsed.youtube)){
         const updated = [];
         if(parsed.gemini){
-            geminiKey = parsed.gemini;
-            localStorage.setItem('gemini_api_key', parsed.gemini);
+            geminiKey = String(parsed.gemini).trim();
+            localStorage.setItem('gemini_api_key', geminiKey);
             const i = document.getElementById('api-key-input');
             if(i) i.value = geminiKey;
             setStatus('api-status','✅ APIキーが設定されています。','ok');
             updated.push('Gemini');
         }
         if(parsed.claude){
-            claudeKey = parsed.claude;
-            localStorage.setItem('claude_api_key', parsed.claude);
+            claudeKey = String(parsed.claude).trim();
+            localStorage.setItem('claude_api_key', claudeKey);
             const i = document.getElementById('claude-key-input');
             if(i) i.value = claudeKey;
             setStatus('claude-status','✅ Claude APIキーが設定されています。 モデル: <code>claude-opus-4-7</code>','ok');
             updated.push('Claude');
         }
         if(parsed.youtube){
-            youtubeKey = parsed.youtube;
-            localStorage.setItem('youtube_api_key', parsed.youtube);
+            youtubeKey = String(parsed.youtube).trim();
+            localStorage.setItem('youtube_api_key', youtubeKey);
             const i = document.getElementById('youtube-key-input');
             if(i) i.value = youtubeKey;
             setStatus('youtube-status','✅ YouTube APIキーが設定されています。','ok');
@@ -3999,6 +4002,83 @@ function loadUploadFile(file){
     reader.readAsDataURL(file);
 }
 
+/* ══════════════════════════════════════════
+   IMAGE → QUIZ: tool_use schema for structured output
+══════════════════════════════════════════ */
+const QUIZ_TOOL = {
+    name: 'save_quiz_data',
+    description: '画像から読み取った学習プリントの内容を構造化して保存する',
+    input_schema: {
+        type: 'object',
+        properties: {
+            title: { type: 'string', description: 'タイトル（漢字）' },
+            titleReading: { type: 'string', description: 'タイトルのよみかた（ひらがな）' },
+            subtitle: { type: 'string', description: 'サブタイトル文' },
+            emoji: { type: 'string', description: '内容に合う絵文字1文字' },
+            paragraphs: {
+                type: 'array',
+                description: '本文の段落（読む順番を保持）',
+                items: {
+                    type: 'object',
+                    properties: {
+                        html: { type: 'string', description: 'ふりがなつきHTML。<ruby>漢字<rt>よみ</rt></ruby>形式で全ての漢字にふりがなをつける' },
+                        plain: { type: 'string', description: '音声読み上げ用テキスト。漢字(よみ)形式（例：土地(とち)）' }
+                    },
+                    required: ['html', 'plain']
+                }
+            },
+            dataBoxLines: {
+                type: 'array',
+                description: 'DATAボックスに表示する各行（ふりがなつきHTML可）',
+                items: { type: 'string' }
+            },
+            glossary: {
+                type: 'array',
+                description: '用語の解説',
+                items: {
+                    type: 'object',
+                    properties: {
+                        termHtml: { type: 'string', description: '用語（<ruby>漢字<rt>よみ</rt></ruby>形式）' },
+                        definitionHtml: { type: 'string', description: '説明（ふりがなつきHTML）' }
+                    },
+                    required: ['termHtml', 'definitionHtml']
+                }
+            },
+            quizGroups: {
+                type: 'array',
+                description: '問題グループ（4〜8個）',
+                items: {
+                    type: 'object',
+                    properties: {
+                        questionHtml: { type: 'string', description: '問題文HTML（ふりがなつき）' },
+                        questionPlain: { type: 'string', description: '音声用問題文（漢字(よみ)形式）' },
+                        bodyTemplate: { type: 'string', description: '穴埋め文。空欄は{B}で表す（例：（{B}）かわいた土地である）' },
+                        items: {
+                            type: 'array',
+                            description: 'この問題グループ内の穴埋め項目（同じ文に空欄が複数なら複数入れる）',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    answer: { type: 'string', description: '正解の単語（短く・文章から直接引用）' },
+                                    choices: {
+                                        type: 'array',
+                                        description: '正解＋誤りの4択。順番はランダム（正解が必ず最初に来ないように）',
+                                        items: { type: 'string' }
+                                    }
+                                },
+                                required: ['answer', 'choices']
+                            }
+                        }
+                    },
+                    required: ['questionHtml', 'questionPlain', 'bodyTemplate', 'items']
+                }
+            },
+            videoSearchQuery: { type: 'string', description: 'YouTube検索キーワード。動物名＋「かわいい」「赤ちゃん」「動物園」等の子ども向けキーワード' }
+        },
+        required: ['title', 'titleReading', 'paragraphs', 'quizGroups']
+    }
+};
+
 async function generateFromImage(){
     if(!claudeKey){showToast('⚙️ 設定からClaude APIキーを入力してください');return;}
     if(!uploadBase64){showToast('画像を選んでください');return;}
@@ -4006,59 +4086,51 @@ async function generateFromImage(){
     statusEl.style.display='block';statusEl.className='gen-status';statusEl.textContent='✨ Claudeが画像を読み取っています…';
     document.getElementById('btn-generate').disabled=true;
 
+    // 防御的整形と形式チェック（送信前に観測可能にする）
+    const cleanKey = (claudeKey || '').trim();
+    const keyInfo = cleanKey
+        ? `長さ${cleanKey.length}文字、先頭${cleanKey.substring(0,12)}…末尾…${cleanKey.slice(-4)}`
+        : '空';
+    console.log('[Claude API] using key:', keyInfo);
+    if(!cleanKey){
+        statusEl.className='gen-status err';
+        statusEl.innerHTML='❌ Claude APIキーが空です<br><button class="api-save-btn" style="margin-top:10px" onclick="openModal()">⚙️ 設定を開く</button>';
+        document.getElementById('btn-generate').disabled=false;
+        return;
+    }
+    if(!cleanKey.startsWith('sk-ant-')){
+        statusEl.className='gen-status err';
+        statusEl.innerHTML=`❌ Claude APIキーの形式が正しくありません（${keyInfo}）。<br>「sk-ant-…」で始まる必要があります。<br><button class="api-save-btn" style="margin-top:10px" onclick="openModal()">⚙️ 設定を開く</button>`;
+        document.getElementById('btn-generate').disabled=false;
+        return;
+    }
+
     const list=getTopicList();
     const nextNum=list.length+1;
     const fileNo=`FILE_${String(nextNum).padStart(2,'0')}`;
 
-    const prompt=`この画像は小学生向けの学習プリントです。書かれている内容を正確に読み取り、以下のJSON形式のみで出力してください。JSONの外側に説明文や\`\`\`は不要です。
+    const prompt=`この画像は小学生向けの学習プリントです。書かれている内容を正確に読み取り、save_quiz_data ツールを呼び出してデータを保存してください。
 
-{
-  "title": "タイトル（漢字）",
-  "titleReading": "よみかた（ひらがな）",
-  "subtitle": "サブタイトル文",
-  "emoji": "内容に合う絵文字1文字",
-  "paragraphs": [
-    {
-      "html": "ふりがなつきHTML（<ruby>漢字<rt>よみ</rt></ruby>形式で全ての漢字にふりがなをつけること）",
-      "plain": "音声読み上げ用テキスト（漢字(よみ)形式、例：土地(とち)）"
-    }
-  ],
-  "dataBoxLines": ["DATA行1（ふりがなつきHTML可）", "行2", "行3"],
-  "glossary": [
-    {"termHtml": "<ruby>用語<rt>よみ</rt></ruby>", "definitionHtml": "説明（ふりがなつき）"}
-  ],
-  "quizGroups": [
-    {
-      "questionHtml": "問題文（<ruby>ふりがな</ruby>つき）",
-      "questionPlain": "音声用問題文（漢字(よみ)形式）",
-      "bodyTemplate": "穴埋め文。空欄は{B}で表す（例：（{B}）かわいた土地である）",
-      "items": [
-        {"answer": "正解の単語（短く・文章から引用）", "choices": ["正解", "誤り1", "誤り2", "誤り3"]}
-      ]
-    }
-  ],
-  "videoSearchQuery": "YouTubeでこの動物の動画を検索する時のキーワード（例：スナネコ かわいい / フェネック 赤ちゃん）。日本語で、対象の動物名を含めること。"
-}
-
-注意：
-- quizGroupsは4〜8グループ作成してください
-- 同じ文の中に2つの空欄がある場合は1つのquizGroupにまとめ、itemsに2つ入れてください
-- choicesの並び順はランダムにしてください（正解は必ずしも最初でなくてよい）
-- 問題の答えは文章から直接引用できる単語にしてください
-- videoSearchQueryは動物名＋「かわいい」「赤ちゃん」「動物園」など、子ども向けの良質な動画が出やすいキーワードにしてください`;
+注意:
+- quizGroups は 4〜8 グループ作成してください
+- 同じ文の中に2つの空欄がある場合は1つの quizGroup にまとめ、items に2つ入れてください
+- choices の並び順はランダムにしてください（正解が必ず最初に来ないように）
+- 問題の答えは文章から直接引用できる単語にしてください`;
 
     try {
         const res=await fetch('https://api.anthropic.com/v1/messages',{
             method:'POST',
             headers:{
                 'Content-Type':'application/json',
-                'x-api-key': claudeKey,
+                'x-api-key': cleanKey,
                 'anthropic-version': '2023-06-01',
                 'anthropic-dangerous-direct-browser-access': 'true'
             },
             body:JSON.stringify({
                 model:'claude-opus-4-7',
-                max_tokens:4000,
+                max_tokens:16000,
+                tools:[QUIZ_TOOL],
+                tool_choice:{ type:'tool', name:'save_quiz_data' },
                 messages:[{role:'user',content:[
                     {type:'image',source:{type:'base64',media_type:uploadMime,data:uploadBase64}},
                     {type:'text',text:prompt}
@@ -4074,11 +4146,29 @@ async function generateFromImage(){
             throw err;
         }
         const data=await res.json();
-        const raw=data.content?.find(c=>c.type==='text')?.text||'';
-        // JSONを抽出
-        const jsonMatch=raw.match(/\{[\s\S]*\}/);
-        if(!jsonMatch)throw new Error('JSONが見つかりませんでした');
-        const parsed=JSON.parse(jsonMatch[0]);
+        console.log('[Claude API] stop_reason:', data.stop_reason, 'usage:', data.usage);
+
+        // 出力打ち切り（max_tokens到達）の検知
+        if(data.stop_reason === 'max_tokens'){
+            const used = data.usage?.output_tokens;
+            const usageInfo = used ? `（${used}トークン使い切り）` : '';
+            const err = new Error(`Claudeの出力が長すぎて途中で切れました${usageInfo}。教材の情報量が多すぎる可能性があります。プリントの一部分だけを撮って試してみてください。`);
+            err.kind = 'truncated';
+            throw err;
+        }
+
+        // tool_use ブロックを探す
+        const toolUse = data.content?.find(c => c.type === 'tool_use' && c.name === 'save_quiz_data');
+        if(!toolUse){
+            // Claudeがテキストで応答した（拒否や指示理解失敗など）
+            const textBlock = data.content?.find(c => c.type === 'text');
+            const reason = textBlock?.text?.trim() || '応答内容なし';
+            const err = new Error(`Claudeがツール呼び出しを返しませんでした。応答: ${reason.substring(0,200)}${reason.length>200?'…':''}`);
+            err.kind = 'no_tool_use';
+            throw err;
+        }
+
+        const parsed = toolUse.input || {};
 
         const topic={
             id:'file_'+Date.now(),
@@ -4097,16 +4187,21 @@ async function generateFromImage(){
         statusEl.textContent='✅ 生成完了！問題を開きます…';
         setTimeout(()=>{closeModal('modal-upload');renderTOC();goLearning(topic.id);},800);
     }catch(e){
+        console.error('[generateFromImage]', e);
         statusEl.className='gen-status err';
         let hint = '';
         if(e.status === 401){
-            hint = '<br>→ Claude APIキーが無効です。「⚙️ 設定」を開いて「🧪 テスト」してください。';
+            hint = `<br>→ サーバーがキーを無効と返しました。<br>送信したキー: ${keyInfo}<br>→ 「⚙️ 設定」を開いて「🧪 テスト」してください。`;
         } else if(e.status === 403){
             hint = '<br>→ APIアクセス権限がないか、クレジット残高が不足しています。';
         } else if(e.status === 429){
             hint = '<br>→ レート上限に達しています。少し時間をおいて再試行してください。';
+        } else if(e.kind === 'truncated'){
+            hint = '<br>→ もう少しシンプルな教材で試すか、画像を分割してみてください。';
+        } else if(e.kind === 'no_tool_use'){
+            hint = '<br>→ もう一度試すか、別の画像で試してください。';
         }
-        statusEl.innerHTML = '❌ エラー: '+e.message+hint;
+        statusEl.innerHTML = '❌ エラー: '+e.message+hint+'<br><button class="api-save-btn" style="margin-top:10px" onclick="generateFromImage()">🔄 もう一度生成</button>';
         document.getElementById('btn-generate').disabled=false;
     }
 }
@@ -4129,10 +4224,12 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
     // Boot IDB-backed storage first (hydrates localStorage from IDB and starts mirroring)
     await _bootStorage();
 
-    // Load keys from (now hydrated) localStorage
-    geminiKey = localStorage.getItem('gemini_api_key') || '';
-    claudeKey = localStorage.getItem('claude_api_key') || '';
-    youtubeKey = localStorage.getItem('youtube_api_key') || '';
+    // Load keys from (now hydrated) localStorage. Trim defensively so that
+    // any stray whitespace/newline sneaked in via paste or QR doesn't get
+    // sent in the x-api-key header.
+    geminiKey = (localStorage.getItem('gemini_api_key') || '').trim();
+    claudeKey = (localStorage.getItem('claude_api_key') || '').trim();
+    youtubeKey = (localStorage.getItem('youtube_api_key') || '').trim();
 
     // Restore settings UI
     if(geminiKey){ document.getElementById('api-key-input').value=geminiKey; setStatus('api-status','✅ APIキーが設定されています。','ok'); }
